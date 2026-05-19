@@ -8,7 +8,7 @@ import asyncio
 import aiohttp
 import logging
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 
 from config.settings import SolanaConfig
@@ -83,7 +83,7 @@ class PriceFeed:
             if price:
                 self._prices[symbol] = price
                 self._price_history[symbol] = deque(maxlen=1000)
-                self._price_history[symbol].append((datetime.utcnow(), price))
+                self._price_history[symbol].append((datetime.now(timezone.utc), price))
     
     async def update_price(self, symbol: str):
         """Met à jour le prix d'un token"""
@@ -98,7 +98,7 @@ class PriceFeed:
             
             if symbol not in self._price_history:
                 self._price_history[symbol] = deque(maxlen=1000)
-            self._price_history[symbol].append((datetime.utcnow(), price))
+            self._price_history[symbol].append((datetime.now(timezone.utc), price))
             
             # Log si changement significatif
             if old_price > 0:

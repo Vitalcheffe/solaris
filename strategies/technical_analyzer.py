@@ -6,7 +6,7 @@ Analyse technique avec RSI, MACD, Bollinger Bands et moyennes mobiles.
 
 import logging
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import StrategyConfig
 from core.models import (
@@ -133,7 +133,7 @@ class TechnicalAnalyzer:
             ema_26=ema_26,
             technical_signal=technical_signal,
             technical_score=technical_score,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     def _analyze_from_price_history(self, symbol: str, timeframe: str) -> Optional[TechnicalIndicators]:
@@ -187,7 +187,7 @@ class TechnicalAnalyzer:
             ema_26=ema_26,
             technical_signal=SignalType.BUY if technical_score > 0.3 else (SignalType.SELL if technical_score < -0.3 else SignalType.HOLD),
             technical_score=technical_score,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     # ========================
@@ -231,22 +231,45 @@ class TechnicalAnalyzer:
         
         Crossover bullish: MACD croise au-dessus du signal
         Crossover bearish: MACD croise en-dessous du signal
+        
+        Calcul complet :
+        1. EMA rapide (12) - EMA lente (26) = ligne MACD pour chaque point
+        2. EMA de la ligne MACD sur 'signal_period' points = signal line
+        3. MACD - Signal = histogramme
         """
         fast = self.config.macd_fast
         slow = self.config.macd_slow
         signal_period = self.config.macd_signal
         
-        ema_fast = self._calculate_ema(prices, fast)
-        ema_slow = self._calculate_ema(prices, slow)
+        if len(prices) < slow + signal_period:
+            # Pas assez de données pour un MACD complet
+            ema_fast = self._calculate_ema(prices, fast)
+            ema_slow = self._calculate_ema(prices, slow)
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line  # Pas de signal si pas assez de données
+            return macd_line, signal_line, 0.0
         
-        # Pour un MACD complet, on a besoin de l'historique des EMA
-        # Version simplifiée : utiliser les dernières valeurs
-        macd_line = ema_fast - ema_slow
+        # Étape 1: Calculer les EMA pour chaque point pour obtenir la série MACD
+        macd_series = []
+        ema_fast_series = self._calculate_ema_series(prices, fast)
+        ema_slow_series = self._calculate_ema_series(prices, slow)
         
-        # Signal line = EMA du MACD (simplifié)
-        # En pratique, on calculerait l'EMA du MACD sur plusieurs périodes
-        signal_line = macd_line * 0.8  # Approximation
+        for i in range(len(prices)):
+            macd_series.append(ema_fast_series[i] - ema_slow_series[i])
         
+        # Les premières valeurs sont instables, on ne garde que celles
+        # à partir de l'index 'slow' (quand l'EMA lente est significative)
+        stable_macd = macd_series[slow - 1:]
+        
+        if len(stable_macd) < signal_period:
+            macd_line = stable_macd[-1] if stable_macd else 0.0
+            return macd_line, macd_line, 0.0
+        
+        # Étape 2: Signal line = EMA du MACD sur 'signal_period' périodes
+        signal_series = self._calculate_ema_series(stable_macd, signal_period)
+        
+        macd_line = stable_macd[-1]
+        signal_line = signal_series[-1]
         histogram = macd_line - signal_line
         
         return macd_line, signal_line, histogram
@@ -285,19 +308,36 @@ class TechnicalAnalyzer:
         return sum(prices[-period:]) / period
     
     def _calculate_ema(self, prices: List[float], period: int) -> float:
-        """Exponential Moving Average"""
-        if len(prices) < period:
-            return prices[-1] if prices else 0
+        """Exponential Moving Average - retourne la dernière valeur"""
+        series = self._calculate_ema_series(prices, period)
+        return series[-1] if series else 0.0
+    
+    def _calculate_ema_series(self, values: List[float], period: int) -> List[float]:
+        """
+        Exponential Moving Average - retourne la série complète.
+        
+        Chaque point a sa valeur EMA, ce qui permet de calculer
+        l'EMA d'une série (comme pour le MACD signal line).
+        """
+        if not values:
+            return []
+        
+        if len(values) < period:
+            # Pas assez de données, retourner la SMA de ce qu'on a
+            sma = sum(values) / len(values)
+            return [sma] * len(values)
         
         multiplier = 2 / (period + 1)
         
-        # Commencer avec la SMA
-        ema = sum(prices[:period]) / period
+        # Commencer avec la SMA des 'period' premières valeurs
+        ema = sum(values[:period]) / period
+        result = [0.0] * (period - 1) + [ema]  # Remplir le début avec des zéros
         
-        for price in prices[period:]:
-            ema = (price - ema) * multiplier + ema
+        for value in values[period:]:
+            ema = (value - ema) * multiplier + ema
+            result.append(ema)
         
-        return ema
+        return result
     
     # ========================
     # Interprétation
@@ -331,8 +371,19 @@ class TechnicalAnalyzer:
         # Détection de squeeze (bands qui se resserrent)
         if len(prices) >= 20:
             band_width = (upper - lower) / middle if middle > 0 else 1
-            avg_width = 0.05  # Seuil typique
-            squeeze = band_width < avg_width
+            # Seuil dynamique : calculer la largeur moyenne des bands
+            # sur les 20 dernières périodes pour adapter le seuil
+            recent_widths = []
+            for i in range(max(0, len(prices) - 20), len(prices) - self.config.bollinger_period + 1):
+                subset = prices[i:i + self.config.bollinger_period]
+                if len(subset) >= self.config.bollinger_period:
+                    sub_mid = sum(subset) / len(subset)
+                    sub_var = sum((p - sub_mid) ** 2 for p in subset) / len(subset)
+                    sub_std = sub_var ** 0.5
+                    sub_width = (2 * self.config.bollinger_std * sub_std) / sub_mid if sub_mid > 0 else 1
+                    recent_widths.append(sub_width)
+            avg_width = sum(recent_widths) / len(recent_widths) if recent_widths else 0.05
+            squeeze = band_width < avg_width * 0.5  # Squeeze = < 50% de la largeur moyenne
         else:
             squeeze = False
         

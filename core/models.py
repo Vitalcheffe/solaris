@@ -5,7 +5,7 @@ Modèles de données pour le système de trading
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
@@ -65,7 +65,7 @@ class TokenInfo:
     is_lp_burned: bool = False
     
     # Timestamp
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -111,7 +111,7 @@ class VolumeData:
     sell_volume_pct: float
     unique_buyers_1h: int
     unique_sellers_1h: int
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     @property
     def is_spike(self) -> bool:
@@ -162,7 +162,7 @@ class TechnicalIndicators:
     technical_signal: SignalType = SignalType.HOLD
     technical_score: float = 0.0  # -1 (bearish) à +1 (bullish)
     
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -181,7 +181,7 @@ class NewTokenEvent:
     is_lp_burned: bool = False
     creator_history_score: float = 0.0  # 0 = nouveau, 1 = très fiable
     honeypot_score: float = 1.0  # 0 = safe, 1 = probablement honeypot
-    top_holder_pct: float = 100.0  # % détenu par le plus gros holder
+    top_holder_pct: float = 0.0  # % détenu par le plus gros holder (0 = pas encore vérifié, sera rempli par RugCheck)
     
     # Métriques post-launch
     price_at_launch_sol: float = 0.0
@@ -212,7 +212,7 @@ class Signal:
     score: float  # 0.0 à 1.0, confiance du signal
     reason: str
     data: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -227,7 +227,7 @@ class ConfluenceResult:
     stop_loss_pct: float
     take_profit_pct: float
     reasons: List[str]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     @property
     def is_actionable(self) -> bool:
@@ -306,4 +306,4 @@ class PortfolioState:
     profit_factor: float = 0.0
     sharpe_ratio: float = 0.0
     
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

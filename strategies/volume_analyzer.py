@@ -7,11 +7,12 @@ Analyse des volumes DEX pour détecter les pics et la pression acheteuse/vendeus
 import asyncio
 import logging
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import StrategyConfig
 from core.models import VolumeData, Signal, SignalType, SignalSource
 from data.onchain_fetcher import OnChainFetcher
+from data.price_feed import TOKEN_MINTS
 
 logger = logging.getLogger("solaris.volume")
 
@@ -54,10 +55,16 @@ class VolumeAnalyzer:
         - Changement de volume sur 1h, 4h, 24h
         - Pression acheteuse vs vendeuse
         - Nombre d'acheteurs/vendeurs uniques
+        
+        IMPORTANT: Les APIs Birdeye nécessitent des adresses mint (base58), 
+        pas des symboles (ex: "SOL"). On convertit via TOKEN_MINTS.
         """
         try:
+            # Convertir le symbole en adresse mint pour les APIs
+            mint_address = TOKEN_MINTS.get(symbol, symbol)
+            
             # Récupérer les données de volume via l'API
-            volume_data = await self.fetcher.get_token_volume(symbol, "24h")
+            volume_data = await self.fetcher.get_token_volume(mint_address, "24h")
             
             if not volume_data:
                 # Fallback: estimer à partir des trades DEX
@@ -73,7 +80,7 @@ class VolumeAnalyzer:
             volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
             
             # Récupérer les trades récents pour la pression acheteur/vendeur
-            trades = await self.fetcher.get_dex_trades(symbol, limit=50)
+            trades = await self.fetcher.get_dex_trades(mint_address, limit=50)
             buy_volume_pct, sell_volume_pct, unique_buyers, unique_sellers = \
                 self._analyze_trade_pressure(trades)
             
@@ -90,7 +97,7 @@ class VolumeAnalyzer:
                 sell_volume_pct=sell_volume_pct,
                 unique_buyers_1h=unique_buyers,
                 unique_sellers_1h=unique_sellers,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
             
         except Exception as e:
@@ -99,7 +106,8 @@ class VolumeAnalyzer:
     
     async def _estimate_volume_from_trades(self, symbol: str) -> Optional[VolumeData]:
         """Estime le volume à partir des trades DEX quand l'API volume n'est pas dispo"""
-        trades = await self.fetcher.get_dex_trades(symbol, limit=100)
+        mint_address = TOKEN_MINTS.get(symbol, symbol)
+        trades = await self.fetcher.get_dex_trades(mint_address, limit=100)
         
         if not trades:
             return None
@@ -124,7 +132,7 @@ class VolumeAnalyzer:
             sell_volume_pct=sell_volume_pct,
             unique_buyers_1h=unique_buyers,
             unique_sellers_1h=unique_sellers,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     def _analyze_trade_pressure(self, trades: List[dict]) -> tuple:

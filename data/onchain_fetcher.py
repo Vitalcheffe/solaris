@@ -10,7 +10,7 @@ import logging
 import json
 import base64
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import SolanaConfig
 from core.models import WhaleTransaction, VolumeData, NewTokenEvent
@@ -215,7 +215,7 @@ class OnChainFetcher:
                                 amount_sol=sol_amount,
                                 amount_tokens=0,
                                 price_sol=0,
-                                timestamp=datetime.utcnow(),
+                                timestamp=datetime.now(timezone.utc),
                                 wallet_label=tx.get("type", ""),
                             )
                             whale_txs.append(whale_tx)
@@ -241,7 +241,7 @@ class OnChainFetcher:
                         amount_sol=sol_amount,
                         amount_tokens=float(tx.get("uiAmount", 0)),
                         price_sol=float(tx.get("price", 0)),
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         wallet_label=tx.get("label"),
                     )
                     whale_txs.append(whale_tx)

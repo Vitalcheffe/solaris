@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import SolarisConfig, TradingMode
 from core.models import (
@@ -96,11 +96,12 @@ class SolarisEngine:
             logger.info("[OK] Price feed démarré")
             
             # Charger le portfolio
+            initial_sol = getattr(self.config, '_portfolio_initial_sol', 10.0)
             if self.config.mode == TradingMode.LIVE:
                 await self._load_portfolio_from_chain()
             else:
-                self.portfolio.available_sol = 10.0  # 10 SOL en paper trading
-                self.portfolio.total_sol = 10.0
+                self.portfolio.available_sol = initial_sol
+                self.portfolio.total_sol = initial_sol
             logger.info(f"[OK] Portfolio: {self.portfolio.total_sol:.4f} SOL")
             
             # Initialiser les stratégies
@@ -132,7 +133,7 @@ class SolarisEngine:
     async def run(self):
         """Boucle principale du moteur"""
         self.running = True
-        self.start_time = datetime.utcnow()
+        self.start_time = datetime.now(timezone.utc)
         
         logger.info("Boucle principale démarrée...")
         
@@ -313,7 +314,7 @@ class SolarisEngine:
         recent_signals = [
             s for s in self.signal_history[-50:]
             if s.token_address == signal.token_address
-            and (datetime.utcnow() - s.timestamp).seconds < 300  # 5 min window
+            and (datetime.now(timezone.utc) - s.timestamp).seconds < 300  # 5 min window
         ]
         
         # Calculer la confluence
@@ -426,7 +427,7 @@ class SolarisEngine:
     async def _close_position(self, trade: Trade, exit_price: float, reason: str):
         """Ferme une position"""
         trade.exit_price_sol = exit_price
-        trade.exit_time = datetime.utcnow()
+        trade.exit_time = datetime.now(timezone.utc)
         trade.pnl_sol = (exit_price - trade.entry_price_sol) * trade.amount_tokens
         trade.pnl_pct = ((exit_price - trade.entry_price_sol) / trade.entry_price_sol) * 100
         

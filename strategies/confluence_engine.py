@@ -7,7 +7,7 @@ pour produire une décision de trading pondérée.
 
 import logging
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import ConfluenceConfig
 from core.models import (
@@ -106,7 +106,7 @@ class ConfluenceEngine:
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
             reasons=reasons,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     def _calculate_weighted_score(self, signals: List[Signal]) -> float:
@@ -191,20 +191,23 @@ class ConfluenceEngine:
         Calcule la taille de position recommandée en SOL.
         
         Plus la confluence est forte, plus la position peut être grande.
-        Mais toujours dans les limites du risk management.
+        La taille est proportionnelle au portfolio disponible, pas hardcodée.
+        
+        Règle : on risque max 5% du portfolio par trade (configurable).
+        Le score de confluence ajuste ce pourcentage.
         """
-        # Taille de base proportionnelle au score
-        base_size = 0.05  # 0.05 SOL minimum
-        
-        # Augmenter avec la confiance
+        # Pourcentage du portfolio à risquer selon la confluence
+        # Score 0.6 -> 2% du portfolio, Score 0.8 -> 4%, Score 1.0 -> 5%
+        base_pct = 0.02  # 2% par défaut
         if confluence_score >= 0.8:
-            recommended = 0.2   # 0.2 SOL pour les signaux très forts
+            base_pct = 0.05  # 5% pour les signaux très forts
         elif confluence_score >= 0.6:
-            recommended = 0.1   # 0.1 SOL pour les signaux moyens
-        else:
-            recommended = 0.05  # 0.05 SOL pour les signaux faibles
+            base_pct = 0.03  # 3% pour les signaux moyens
         
-        return recommended
+        # Note: le risk manager appliquera les limites max_position_size_pct
+        # et max_total_exposure_pct en plus de cette recommandation
+        # On retourne un ordre de grandeur qui sera ajusté par le risk manager
+        return base_pct
     
     def _no_signal_result(self, token_address: str) -> ConfluenceResult:
         """Résultat quand il n'y a pas de signaux"""
@@ -218,5 +221,5 @@ class ConfluenceEngine:
             stop_loss_pct=5.0,
             take_profit_pct=10.0,
             reasons=["Aucun signal détecté"],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )

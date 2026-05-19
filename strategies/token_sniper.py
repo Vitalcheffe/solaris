@@ -8,7 +8,7 @@ Filtres anti-rug pull intégrés.
 import asyncio
 import logging
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config.settings import StrategyConfig
 from core.models import (
@@ -85,7 +85,7 @@ class TokenSniper:
                     creator_address=listing.get("creator", listing.get("authority", "")),
                     launch_platform=listing.get("platform", "unknown"),
                     initial_liquidity_sol=float(listing.get("liquidity", 0)),
-                    launch_time=datetime.utcnow(),
+                    launch_time=datetime.now(timezone.utc),
                     price_at_launch_sol=float(listing.get("price", 0)),
                     current_price_sol=float(listing.get("price", 0)),
                 )
@@ -97,7 +97,7 @@ class TokenSniper:
                         token_event.is_mint_renounced = security.get("mint_authority") is None
                         token_event.is_lp_burned = security.get("is_lp_burned", False)
                         token_event.honeypot_score = float(security.get("score", 0.5))
-                        token_event.top_holder_pct = float(security.get("top_holder_pct", 100))
+                        token_event.top_holder_pct = float(security.get("top_holder_pct", 0))
                 
                 new_tokens.append(token_event)
             

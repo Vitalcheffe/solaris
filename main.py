@@ -16,7 +16,7 @@ import logging
 import sys
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ajouter le répertoire parent au path
@@ -112,7 +112,7 @@ async def run_solaris(config: SolarisConfig):
             f.write(f"\n---\nTask ID: solaris-run\nAgent: SOLARIS Engine\n")
             f.write(f"Task: Run SOLARIS trading system\n")
             f.write(f"Work Log:\n")
-            f.write(f"- Started at {datetime.utcnow().isoformat()}\n")
+            f.write(f"- Started at {datetime.now(timezone.utc).isoformat()}\n")
             f.write(f"- Mode: {config.mode.value}\n")
             f.write(f"- Portfolio: {config.risk.risk_level.value} risk\n\n")
         
@@ -197,7 +197,8 @@ Exemples:
     config = SolarisConfig()
     config.mode = TradingMode(args.mode)
     config.risk.risk_level = RiskLevel(args.risk)
-    config.portfolio_initial_sol = args.sol
+    # Stocker le capital initial pour le paper trading
+    config._portfolio_initial_sol = args.sol
     
     if args.rpc:
         config.solana.rpc_url = args.rpc

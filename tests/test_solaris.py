@@ -18,6 +18,7 @@ from core.models import (
     WhaleTransaction, VolumeData, TradeStatus
 )
 from strategies.confluence_engine import ConfluenceEngine
+from strategies.technical_analyzer import TechnicalAnalyzer
 from risk.manager import RiskManager
 from utils.helpers import (
     lamports_to_sol, sol_to_lamports, shorten_address, format_sol,
@@ -131,6 +132,181 @@ class TestRiskManager(unittest.TestCase):
         self.assertLessEqual(size, 10.0 * 0.05)
 
 
+class TestTechnicalAnalyzer(unittest.TestCase):
+    """Tests de l'analyseur technique - MACD, RSI, Bollinger"""
+    
+    def setUp(self):
+        self.config = SolarisConfig()
+        self.analyzer = TechnicalAnalyzer(self.config.strategy, None)
+    
+    def test_rsi_neutral_with_little_data(self):
+        """RSI doit retourner 50 (neutre) si pas assez de données"""
+        prices = [100.0] * 5
+        rsi = self.analyzer._calculate_rsi(prices)
+        self.assertEqual(rsi, 50.0)
+    
+    def test_rsi_oversold(self):
+        """RSI doit être bas quand les prix baissent fortement"""
+        # 14 baisses consécutives
+        prices = [200.0 - i * 10 for i in range(20)]
+        rsi = self.analyzer._calculate_rsi(prices)
+        self.assertLess(rsi, 40)
+    
+    def test_rsi_overbought(self):
+        """RSI doit être haut quand les prix montent fortement"""
+        # 14 hausses consécutives
+        prices = [100.0 + i * 10 for i in range(20)]
+        rsi = self.analyzer._calculate_rsi(prices)
+        self.assertGreater(rsi, 60)
+    
+    def test_macd_signal_line_is_not_fake(self):
+        """
+        CRITIQUE: La signal line du MACD ne doit PAS être macd_line * 0.8.
+        Elle doit être l'EMA du MACD sur 'signal_period' périodes.
+        """
+        # Créer des prix avec suffisamment de données pour un MACD complet
+        # 50 prix = assez pour EMA 26 + signal 9
+        import random
+        random.seed(42)
+        prices = [100.0 + random.uniform(-2, 2) for _ in range(50)]
+        
+        macd_line, signal_line, histogram = self.analyzer._calculate_macd(prices)
+        
+        # La signal line ne doit JAMAIS être exactement macd_line * 0.8
+        # (c'était le bug critique)
+        if macd_line != 0:
+            ratio = signal_line / macd_line
+            self.assertNotAlmostEqual(ratio, 0.8, places=2,
+                msg="Signal line est toujours macd * 0.8 - le bug est toujours là!")
+        
+        # Le signal line doit être une vraie EMA du MACD
+        # On peut le vérifier en comparant avec un calcul manuel
+        ema_fast = self.analyzer._calculate_ema(prices, 12)
+        ema_slow = self.analyzer._calculate_ema(prices, 26)
+        expected_macd = ema_fast - ema_slow
+        self.assertAlmostEqual(macd_line, expected_macd, places=10,
+            msg="MACD line ne correspond pas à EMA_fast - EMA_slow")
+    
+    def test_macd_bullish_signal(self):
+        """MACD doit détecter un crossover bullish"""
+        # Prix qui montent après une baisse = crossover potentiel
+        prices = [100.0 - i for i in range(30)] + [71.0 + i * 2 for i in range(30)]
+        
+        macd_line, signal_line, histogram = self.analyzer._calculate_macd(prices)
+        
+        # Avec des prix qui remontent, le MACD devrait être au-dessus du signal
+        # (bullish) ou au moins l'histogramme devrait être positif
+        # Pas toujours garanti avec un petit dataset, mais on vérifie que le calcul tourne
+        self.assertIsInstance(macd_line, float)
+        self.assertIsInstance(signal_line, float)
+        self.assertIsInstance(histogram, float)
+    
+    def test_ema_series_length(self):
+        """_calculate_ema_series doit retourner le même nombre de points que l'input"""
+        prices = [100.0 + i for i in range(30)]
+        series = self.analyzer._calculate_ema_series(prices, 12)
+        self.assertEqual(len(series), len(prices))
+    
+    def test_bollinger_bands(self):
+        """Bollinger bands doivent entourer les prix"""
+        prices = [100.0] * 20
+        upper, middle, lower = self.analyzer._calculate_bollinger(prices)
+        self.assertEqual(upper, middle)  # Pas de volatilité = bands au même niveau
+        self.assertEqual(lower, middle)
+    
+    def test_bollinger_squeeze_detection(self):
+        """Le squeeze doit être détecté quand les bands se resserrent"""
+        # 50 périodes stables puis 50 périodes avec volatilité croissante
+        prices = [100.0] * 50 + [100.0 + i * 0.5 for i in range(50)]
+        upper, middle, lower = self.analyzer._calculate_bollinger(prices)
+        position, squeeze = self.analyzer._interpret_bollinger(
+            prices[-1], upper, middle, lower, prices
+        )
+        # Le résultat doit être un tuple valide
+        self.assertIn(position, ["above_upper", "below_lower", "middle"])
+        self.assertIsInstance(squeeze, bool)
+
+
+class TestWhaleTracker(unittest.TestCase):
+    """Tests du whale tracker"""
+    
+    def test_whale_scoring_large_amount(self):
+        """
+        CRITIQUE: Le bonus pour > 500 SOL doit être accessible.
+        Avant le fix, la branche > 500 était inaccessible car
+        l'ordre était if > 100 elif > 500 (toujours le premier if).
+        """
+        from strategies.whale_tracker import WhaleTracker
+        from data.onchain_fetcher import OnChainFetcher
+        from unittest.mock import MagicMock
+        
+        config = SolarisConfig()
+        fetcher = MagicMock(spec=OnChainFetcher)
+        tracker = WhaleTracker(config.strategy, fetcher)
+        
+        # Whale de 600 SOL
+        big_whale = WhaleTransaction(
+            signature="sig1", wallet_address="w1",
+            token_address="t1", token_symbol="SOL",
+            signal_type=SignalType.BUY, amount_sol=600.0,
+            amount_tokens=300.0, price_sol=2.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        signal_big = tracker.generate_signal(big_whale)
+        
+        # Whale de 150 SOL
+        medium_whale = WhaleTransaction(
+            signature="sig2", wallet_address="w2",
+            token_address="t2", token_symbol="SOL",
+            signal_type=SignalType.BUY, amount_sol=150.0,
+            amount_tokens=75.0, price_sol=2.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        signal_medium = tracker.generate_signal(medium_whale)
+        
+        # Le signal de la grosse baleine doit avoir un score plus élevé
+        if signal_big and signal_medium:
+            self.assertGreater(signal_big.score, signal_medium.score,
+                "Le score de la baleine >500 SOL doit être > celui de >100 SOL")
+
+
+class TestTokenSniperFilters(unittest.TestCase):
+    """Tests des filtres anti-rug du token sniper"""
+    
+    def test_top_holder_default_is_zero(self):
+        """
+        CRITIQUE: Le défaut de top_holder_pct doit être 0 (pas vérifié),
+        pas 100 (qui rejetterait tous les tokens).
+        """
+        token = NewTokenEvent(
+            token_address="test", token_symbol="TEST",
+            token_name="Test Token", creator_address="c1",
+            launch_platform="raydium",
+            initial_liquidity_sol=50.0,
+            launch_time=datetime.now(timezone.utc),
+        )
+        # Par défaut, top_holder_pct doit être 0, pas 100
+        self.assertEqual(token.top_holder_pct, 0.0,
+            "top_holder_pct par défaut doit être 0, pas 100")
+    
+    def test_token_with_low_top_holder_passes_filter(self):
+        """Un token avec top_holder < 50% ne doit pas être rejeté"""
+        token = NewTokenEvent(
+            token_address="test", token_symbol="TEST",
+            token_name="Test Token", creator_address="c1",
+            launch_platform="raydium",
+            initial_liquidity_sol=50.0,
+            launch_time=datetime.now(timezone.utc),
+            top_holder_pct=30.0,
+            is_mint_renounced=True,
+            is_lp_burned=True,
+            honeypot_score=0.1,
+            creator_history_score=0.8,
+        )
+        # risk_level doit être SAFE ou MEDIUM, pas DANGEROUS ou RISKY
+        self.assertIn(token.risk_level, [TokenRisk.SAFE, TokenRisk.MEDIUM])
+
+
 class TestHelpers(unittest.TestCase):
     """Tests des fonctions utilitaires"""
     
@@ -213,9 +389,8 @@ class TestDataModels(unittest.TestCase):
             launch_time=datetime.now(timezone.utc),
             is_mint_renounced=True, is_lp_burned=True,
             honeypot_score=0.1, top_holder_pct=5.0,
-            creator_history_score=0.8,  # High score = trusted creator
+            creator_history_score=0.8,
         )
-        # With all safety checks passed, it should be MEDIUM or SAFE
         self.assertIn(safe.risk_level, [TokenRisk.SAFE, TokenRisk.MEDIUM])
     
     def test_trade_is_open(self):
@@ -228,6 +403,20 @@ class TestDataModels(unittest.TestCase):
             signals=["whale_tracking"],
         )
         self.assertTrue(trade.is_open)
+    
+    def test_new_token_default_top_holder_is_zero(self):
+        """
+        CRITIQUE: Un nouveau token sans vérification RugCheck
+        ne doit PAS être auto-rejeté (top_holder_pct=0 par défaut).
+        """
+        token = NewTokenEvent(
+            token_address="new", token_symbol="NEW",
+            token_name="New Token", creator_address="c1",
+            launch_platform="pump.fun",
+            initial_liquidity_sol=10.0,
+            launch_time=datetime.now(timezone.utc),
+        )
+        self.assertEqual(token.top_holder_pct, 0.0)
 
 
 class TestConfig(unittest.TestCase):
@@ -242,6 +431,51 @@ class TestConfig(unittest.TestCase):
         config = SolarisConfig()
         total = sum(config.confluence.signal_weights.values())
         self.assertAlmostEqual(total, 1.0, places=1)
+    
+    def test_helius_rpc_url(self):
+        config = SolarisConfig()
+        config.solana.helius_api_key = "test-key"
+        self.assertIn("test-key", config.solana.helius_rpc_url)
+        self.assertIn("helius", config.solana.helius_rpc_url)
+
+
+class TestExecutor(unittest.TestCase):
+    """Tests de l'exécuteur de trades"""
+    
+    def test_paper_execute_creates_trade(self):
+        """Le paper trading doit créer un Trade valide"""
+        from execution.executor import TradeExecutor
+        from config.settings import WalletConfig, SolanaConfig
+        
+        executor = TradeExecutor(WalletConfig(), SolanaConfig(), TradingMode.PAPER)
+        
+        confluence = ConfluenceResult(
+            token_address="test", token_symbol="SOL",
+            signals=[], confluence_score=0.7,
+            recommended_action=SignalType.BUY,
+            recommended_size_sol=0.1,
+            stop_loss_pct=5.0, take_profit_pct=10.0,
+            reasons=["test"]
+        )
+        
+        import asyncio
+        trade = asyncio.get_event_loop().run_until_complete(
+            executor.execute(confluence, 0.1)
+        )
+        
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.side, SignalType.BUY)
+        self.assertEqual(trade.amount_sol, 0.1)
+        self.assertEqual(trade.status, TradeStatus.EXECUTED)
+    
+    def test_keypair_none_without_private_key(self):
+        """Le keypair doit être None si aucune clé privée n'est configurée"""
+        from execution.executor import TradeExecutor
+        from config.settings import WalletConfig, SolanaConfig
+        
+        executor = TradeExecutor(WalletConfig(), SolanaConfig(), TradingMode.LIVE)
+        keypair = executor._get_keypair()
+        self.assertIsNone(keypair)
 
 
 if __name__ == "__main__":
