@@ -1,0 +1,57 @@
+# ============================================
+# SOLARIS - .gitignore
+# ============================================
+
+# Environment variables (NE JAMAIS COMMIT LES API KEYS)
+.env
+.env.local
+.env.production
+
+# API Keys
+*_api_key*
+*_secret*
+*credentials*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+solaris.log
+trades.json
+performance.json
+
+# Data files
+*.db
+*.sqlite3
+data/cache/
+data/history/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Search results from research
+search*.json
+
+# Worklog (local only)
+worklog.md
