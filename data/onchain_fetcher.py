@@ -62,6 +62,13 @@ class OnChainFetcher:
             await self.session.close()
         self._connected = False
     
+    @property
+    def helius_api_base(self) -> str:
+        """URL de base pour les APIs Helius Enhanced"""
+        if self.config.helius_api_key:
+            return f"https://api-mainnet.helius-rpc.com/v0"
+        return ""
+    
     async def _rpc_call(self, method: str, params: List = None) -> Any:
         """Appel RPC Solana"""
         if not self.session:
@@ -141,6 +148,28 @@ class OnChainFetcher:
         ])
         return result
     
+    async def _helius_api_call(self, endpoint: str, params: Dict = None) -> Any:
+        """Appel API Helius Enhanced (DAS, Parse Transactions, etc.)"""
+        if not self.config.helius_api_key or not self.session:
+            return None
+        
+        base = self.helius_api_base
+        url = f"{base}{endpoint}?api-key={self.config.helius_api_key}"
+        
+        try:
+            if params:
+                async with self.session.post(url, json=params) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+            else:
+                async with self.session.get(url) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+        except Exception as e:
+            logger.debug(f"Helius API error ({endpoint}): {e}")
+        
+        return None
+    
     async def scan_large_transactions(
         self, 
         token_address: str, 
@@ -148,26 +177,67 @@ class OnChainFetcher:
     ) -> List[WhaleTransaction]:
         """
         Scanne les grandes transactions pour un token.
-        Utilise les APIs Birdeye ou Solscan pour les données de transactions.
+        Utilise Helius Enhanced API (Parse Transactions) + Birdeye.
         """
         whale_txs = []
         
-        # Méthode 1: Birdeye API (si disponible)
+        # Méthode 1: Helius Parse Transaction History (si disponible)
+        if self.config.helius_api_key:
+            helius_txs = await self._helius_api_call(
+                f"/addresses/{token_address}/transactions"
+            )
+            if helius_txs and isinstance(helius_txs, list):
+                for tx in helius_txs:
+                    # Helius parsed transactions
+                    native_transfers = tx.get("nativeTransfers", [])
+                    events = tx.get("events", {})
+                    swap = events.get("swap", {})
+                    
+                    if swap:
+                        sol_amount = 0
+                        for transfer in native_transfers:
+                            amount = transfer.get("amount", 0) / 1_000_000_000
+                            if amount >= min_sol * 0.1:  # Even partial matches
+                                sol_amount += amount
+                        
+                        if sol_amount >= min_sol:
+                            from core.models import SignalType
+                            is_buy = any(
+                                t.get("toUserAccount") == token_address 
+                                for t in native_transfers
+                            )
+                            whale_tx = WhaleTransaction(
+                                signature=tx.get("signature", ""),
+                                wallet_address=tx.get("description", "")[:44],
+                                token_address=token_address,
+                                token_symbol=tx.get("tokenTransfers", [{}])[0].get("mint", "UNKNOWN") if tx.get("tokenTransfers") else "UNKNOWN",
+                                signal_type=SignalType.BUY if is_buy else SignalType.SELL,
+                                amount_sol=sol_amount,
+                                amount_tokens=0,
+                                price_sol=0,
+                                timestamp=datetime.utcnow(),
+                                wallet_label=tx.get("type", ""),
+                            )
+                            whale_txs.append(whale_tx)
+        
+        # Méthode 2: Birdeye API (fallback/complément)
         transactions = await self._birdeye_get(
             "/defi/txs",
             {"address": token_address, "limit": 50}
         )
         
         if transactions:
+            from core.models import SignalType
             for tx in transactions:
                 sol_amount = float(tx.get("amount", 0))
                 if sol_amount >= min_sol:
+                    side_str = tx.get("side", "BUY").upper()
                     whale_tx = WhaleTransaction(
                         signature=tx.get("txHash", ""),
                         wallet_address=tx.get("owner", ""),
                         token_address=token_address,
                         token_symbol=tx.get("symbol", "UNKNOWN"),
-                        signal_type=tx.get("side", "BUY") == "BUY" and __import__('core.models', fromlist=['SignalType']).SignalType.BUY or __import__('core.models', fromlist=['SignalType']).SignalType.SELL,
+                        signal_type=SignalType.BUY if side_str == "BUY" else SignalType.SELL,
                         amount_sol=sol_amount,
                         amount_tokens=float(tx.get("uiAmount", 0)),
                         price_sol=float(tx.get("price", 0)),
